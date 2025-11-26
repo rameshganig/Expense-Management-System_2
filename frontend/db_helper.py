@@ -1,7 +1,8 @@
-import mysql.connector
+import sqlite3
 from contextlib import contextmanager
 import os
 from datetime import date
+from pathlib import Path
 
 # Make logging_setup import resilient to different working directories
 try:
@@ -30,74 +31,35 @@ except Exception:
 logger = setup_logger('db_helper')
 
 
-def _get_db_config():
-    """Get MySQL database configuration from Streamlit secrets or environment variables.
-    Priority:
-      1. Streamlit secrets (if running inside Streamlit)
-      2. Environment variables
-      3. Defaults (localhost for local development)
-    """
-    config = {
-        'host': 'localhost',
-        'user': 'root',
-        'password': '',
-        'database': 'expense_manager',
-        'port': 3306,
-    }
-
-    # 1) Try Streamlit secrets first
-    if st is not None:
-        try:
-            config['host'] = st.secrets.get('DB_HOST', config['host'])
-            config['user'] = st.secrets.get('DB_USER', config['user'])
-            config['password'] = st.secrets.get('DB_PASSWORD', config['password'])
-            config['database'] = st.secrets.get('DB_NAME', config['database'])
-            config['port'] = int(st.secrets.get('DB_PORT', config['port']))
-            logger.info(f"✅ Loaded DB config from Streamlit secrets: {config['host']}")
-            return config
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to load from Streamlit secrets: {e}")
-
-    # 2) Try environment variables
-    env_host = os.environ.get('DB_HOST')
-    env_user = os.environ.get('DB_USER')
-    env_pass = os.environ.get('DB_PASSWORD')
-    env_db = os.environ.get('DB_NAME')
-    env_port = os.environ.get('DB_PORT')
-    
-    if env_host or env_user or env_pass or env_db or env_port:
-        config['host'] = env_host or config['host']
-        config['user'] = env_user or config['user']
-        config['password'] = env_pass or config['password']
-        config['database'] = env_db or config['database']
-        config['port'] = int(env_port) if env_port else config['port']
-        logger.info(f"✅ Loaded DB config from environment variables: {config['host']}")
-        return config
-
-    logger.warning(f"⚠️ Using default DB config (localhost) - No secrets or env vars found!")
-    return config
+def _get_db_path():
+    """Get SQLite database file path. Create in home directory for persistence."""
+    db_dir = Path.home() / '.expense_manager'
+    db_dir.mkdir(exist_ok=True)
+    return str(db_dir / 'expenses.db')
 
 
 @contextmanager
 def get_db_cursor(commit=False):
-    """Context manager that yields a MySQL cursor with dict-like rows.
+    """Context manager that yields a SQLite cursor with row_factory set to dict-like access.
 
     Creates the `expenses` table if it doesn't exist.
     """
-    config = _get_db_config()
+    db_path = _get_db_path()
+    logger.info(f"✅ Using SQLite database at: {db_path}")
 
     try:
-        conn = mysql.connector.connect(**config)
-        cursor = conn.cursor(dictionary=True)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row  # Return rows as dict-like objects
+        cursor = conn.cursor()
 
         # Ensure table exists
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS expenses (
-                id INT AUTO_INCREMENT PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 expense_date DATE NOT NULL,
-                amount DECIMAL(10, 2) NOT NULL,
-                category VARCHAR(100) NOT NULL,
+                amount REAL NOT NULL,
+                category TEXT NOT NULL,
                 notes TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -112,8 +74,8 @@ def get_db_cursor(commit=False):
         finally:
             cursor.close()
             conn.close()
-    except mysql.connector.Error as err:
-        logger.error(f"MySQL connection error: {err}")
+    except sqlite3.Error as err:
+        logger.error(f"SQLite connection error: {err}")
         raise
 
 
@@ -127,16 +89,16 @@ def fetch_expenses_for_date(expense_date):
     logger.info(f"fetch_expenses_for_date called with {expense_date}")
     dstr = _to_date_str(expense_date)
     with get_db_cursor() as cursor:
-        cursor.execute("SELECT * FROM expenses WHERE expense_date = %s", (dstr,))
+        cursor.execute("SELECT * FROM expenses WHERE expense_date = ?", (dstr,))
         rows = cursor.fetchall()
-        return rows if rows else []
+        return [dict(row) for row in rows] if rows else []
 
 
 def delete_expenses_for_date(expense_date):
     logger.info(f"delete_expenses_for_date called with {expense_date}")
     dstr = _to_date_str(expense_date)
     with get_db_cursor(commit=True) as cursor:
-        cursor.execute("DELETE FROM expenses WHERE expense_date = %s", (dstr,))
+        cursor.execute("DELETE FROM expenses WHERE expense_date = ?", (dstr,))
 
 
 def insert_expense(expense_date, amount, category, notes):
@@ -144,7 +106,7 @@ def insert_expense(expense_date, amount, category, notes):
     dstr = _to_date_str(expense_date)
     with get_db_cursor(commit=True) as cursor:
         cursor.execute(
-            "INSERT INTO expenses (expense_date, amount, category, notes) VALUES (%s, %s, %s, %s)",
+            "INSERT INTO expenses (expense_date, amount, category, notes) VALUES (?, ?, ?, ?)",
             (dstr, float(amount), category, notes)
         )
 
@@ -158,13 +120,13 @@ def fetch_expense_summary(start_date, end_date):
             """
             SELECT category, SUM(amount) as total
             FROM expenses
-            WHERE expense_date BETWEEN %s AND %s
+            WHERE expense_date BETWEEN ? AND ?
             GROUP BY category;
             """,
             (s, e),
         )
         rows = cursor.fetchall()
-        return rows if rows else []
+        return [dict(row) for row in rows] if rows else []
 
 
 if __name__ == "__main__":
@@ -172,8 +134,8 @@ if __name__ == "__main__":
     from datetime import date
     today = date.today()
     try:
-        config = _get_db_config()
-        print("DB Config:", {k: v if k != 'password' else '***' for k, v in config.items()})
+        db_path = _get_db_path()
+        print(f"Using SQLite database at: {db_path}")
         delete_expenses_for_date(today)
         insert_expense(today, 12.5, "Food", "Coffee")
         insert_expense(today, 100, "Shopping", "Books")
