@@ -1,130 +1,183 @@
 import mysql.connector
 from contextlib import contextmanager
-from logging_setup import setup_logger
-import streamlit as st
 import os
+from datetime import date
+
+# Make logging_setup import resilient to different working directories
+try:
+    from logging_setup import setup_logger
+except Exception:
+    try:
+        from .logging_setup import setup_logger
+    except Exception:
+        def setup_logger(name: str):
+            import logging
+            logger = logging.getLogger(name)
+            if not logger.handlers:
+                handler = logging.StreamHandler()
+                fmt = "%(asctime)s %(levelname)s %(message)s"
+                handler.setFormatter(logging.Formatter(fmt))
+                logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+            return logger
+
+# Allow importing this module outside a Streamlit runtime (e.g., during tests)
+try:
+    import streamlit as st
+except Exception:
+    st = None
 
 logger = setup_logger('db_helper')
 
 
+def _get_db_config():
+    """Get MySQL database configuration from Streamlit secrets or environment variables.
+    Priority:
+      1. Streamlit secrets (if running inside Streamlit)
+      2. Environment variables
+      3. Defaults (localhost for local development)
+    """
+    config = {
+        'host': 'localhost',
+        'user': 'root',
+        'password': '',
+        'database': 'expense_manager',
+        'port': 3306,
+    }
+
+    # 1) Try Streamlit secrets first
+    if st is not None:
+        try:
+            config['host'] = st.secrets.get('DB_HOST', config['host'])
+            config['user'] = st.secrets.get('DB_USER', config['user'])
+            config['password'] = st.secrets.get('DB_PASSWORD', config['password'])
+            config['database'] = st.secrets.get('DB_NAME', config['database'])
+            config['port'] = int(st.secrets.get('DB_PORT', config['port']))
+            logger.info(f"✅ Loaded DB config from Streamlit secrets: {config['host']}")
+            return config
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load from Streamlit secrets: {e}")
+
+    # 2) Try environment variables
+    env_host = os.environ.get('DB_HOST')
+    env_user = os.environ.get('DB_USER')
+    env_pass = os.environ.get('DB_PASSWORD')
+    env_db = os.environ.get('DB_NAME')
+    env_port = os.environ.get('DB_PORT')
+    
+    if env_host or env_user or env_pass or env_db or env_port:
+        config['host'] = env_host or config['host']
+        config['user'] = env_user or config['user']
+        config['password'] = env_pass or config['password']
+        config['database'] = env_db or config['database']
+        config['port'] = int(env_port) if env_port else config['port']
+        logger.info(f"✅ Loaded DB config from environment variables: {config['host']}")
+        return config
+
+    logger.warning(f"⚠️ Using default DB config (localhost) - No secrets or env vars found!")
+    return config
+
+
 @contextmanager
 def get_db_cursor(commit=False):
-    """
-    Create a database cursor with credentials from Streamlit secrets or environment variables.
-    For Streamlit Cloud: Add secrets in app Settings → Secrets
-    For local development: Use .streamlit/secrets.toml
-    """
-    try:
-        db_host = st.secrets.get("DB_HOST", os.getenv("DB_HOST", "localhost"))
-        db_user = st.secrets.get("DB_USER", os.getenv("DB_USER", "root"))
-        db_password = st.secrets.get("DB_PASSWORD", os.getenv("DB_PASSWORD", ""))
-        db_name = st.secrets.get("DB_NAME", os.getenv("DB_NAME", "expense_manager"))
-        db_port = st.secrets.get("DB_PORT", os.getenv("DB_PORT", 3306))
-    except Exception as e:
-        db_host = os.getenv("DB_HOST", "localhost")
-        db_user = os.getenv("DB_USER", "root")
-        db_password = os.getenv("DB_PASSWORD", "")
-        db_name = os.getenv("DB_NAME", "expense_manager")
-        db_port = os.getenv("DB_PORT", 3306)
-    
-    try:
-        # Convert port to int if it's a string
-        try:
-            db_port = int(db_port)
-        except (ValueError, TypeError):
-            db_port = 3306
-            
-        connection = mysql.connector.connect(
-            host=db_host,
-            user=db_user,
-            password=db_password,
-            database=db_name,
-            port=db_port,
-            autocommit=False,
-            connection_timeout=10
-        )
-    except mysql.connector.Error as e:
-        error_msg = f"""
-        ❌ DATABASE CONNECTION ERROR
-        
-        Your app tried to connect to: {db_host}
-        
-        🚀 For Streamlit Cloud deployment:
-        1. Go to your Streamlit app → Settings → Secrets
-        2. Add these secrets:
-           DB_HOST = "your-cloud-database-host"
-           DB_USER = "your-database-user"
-           DB_PASSWORD = "your-database-password"
-           DB_NAME = "expense_manager"
-           DB_PORT = "3306"
-        
-        ⭐ Recommended: Use PlanetScale (planetscale.com)
-           - Free MySQL-compatible database
-           - Easy setup (5 minutes)
-           - No credit card needed
-        
-        📖 See CLOUD_DATABASE_SETUP.md for detailed instructions
-        
-        💻 For local development:
-        - Update frontend/.streamlit/secrets.toml
-        - Make sure MySQL is running
-        - Use 'localhost' as DB_HOST
-        
-        Error details: {str(e)}
-        """
-        st.error(error_msg)
-        logger.error(error_msg)
-        raise Exception(error_msg)
+    """Context manager that yields a MySQL cursor with dict-like rows.
 
-    cursor = connection.cursor(dictionary=True)
-    yield cursor
-    if commit:
-        connection.commit()
-    cursor.close()
-    connection.close()
+    Creates the `expenses` table if it doesn't exist.
+    """
+    config = _get_db_config()
+
+    try:
+        conn = mysql.connector.connect(**config)
+        cursor = conn.cursor(dictionary=True)
+
+        # Ensure table exists
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS expenses (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                expense_date DATE NOT NULL,
+                amount DECIMAL(10, 2) NOT NULL,
+                category VARCHAR(100) NOT NULL,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.commit()
+
+        try:
+            yield cursor
+            if commit:
+                conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+    except mysql.connector.Error as err:
+        logger.error(f"MySQL connection error: {err}")
+        raise
+
+
+def _to_date_str(d):
+    if isinstance(d, (date,)):
+        return d.strftime("%Y-%m-%d")
+    return str(d)
 
 
 def fetch_expenses_for_date(expense_date):
     logger.info(f"fetch_expenses_for_date called with {expense_date}")
+    dstr = _to_date_str(expense_date)
     with get_db_cursor() as cursor:
-        cursor.execute("SELECT * FROM expenses WHERE expense_date = %s", (expense_date,))
-        expenses = cursor.fetchall()
-        return expenses
+        cursor.execute("SELECT * FROM expenses WHERE expense_date = %s", (dstr,))
+        rows = cursor.fetchall()
+        return rows if rows else []
 
 
 def delete_expenses_for_date(expense_date):
     logger.info(f"delete_expenses_for_date called with {expense_date}")
+    dstr = _to_date_str(expense_date)
     with get_db_cursor(commit=True) as cursor:
-        cursor.execute("DELETE FROM expenses WHERE expense_date = %s", (expense_date,))
+        cursor.execute("DELETE FROM expenses WHERE expense_date = %s", (dstr,))
 
 
 def insert_expense(expense_date, amount, category, notes):
     logger.info(f"insert_expense called with date: {expense_date}, amount: {amount}, category: {category}, notes: {notes}")
+    dstr = _to_date_str(expense_date)
     with get_db_cursor(commit=True) as cursor:
         cursor.execute(
             "INSERT INTO expenses (expense_date, amount, category, notes) VALUES (%s, %s, %s, %s)",
-            (expense_date, amount, category, notes)
+            (dstr, float(amount), category, notes)
         )
 
 
 def fetch_expense_summary(start_date, end_date):
     logger.info(f"fetch_expense_summary called with start: {start_date} end: {end_date}")
+    s = _to_date_str(start_date)
+    e = _to_date_str(end_date)
     with get_db_cursor() as cursor:
         cursor.execute(
-            '''SELECT category, SUM(amount) as total 
-               FROM expenses WHERE expense_date
-               BETWEEN %s and %s  
-               GROUP BY category;''',
-            (start_date, end_date)
+            """
+            SELECT category, SUM(amount) as total
+            FROM expenses
+            WHERE expense_date BETWEEN %s AND %s
+            GROUP BY category;
+            """,
+            (s, e),
         )
-        data = cursor.fetchall()
-        return data
+        rows = cursor.fetchall()
+        return rows if rows else []
 
 
 if __name__ == "__main__":
-    expenses = fetch_expenses_for_date("2024-09-30")
-    print(expenses)
-    # delete_expenses_for_date("2024-08-25")
-    summary = fetch_expense_summary("2024-08-01", "2024-08-05")
-    for record in summary:
-        print(record)
+    # Quick local smoke test
+    from datetime import date
+    today = date.today()
+    try:
+        config = _get_db_config()
+        print("DB Config:", {k: v if k != 'password' else '***' for k, v in config.items()})
+        delete_expenses_for_date(today)
+        insert_expense(today, 12.5, "Food", "Coffee")
+        insert_expense(today, 100, "Shopping", "Books")
+        print("Expenses for today:", fetch_expenses_for_date(today))
+        print("Summary:", fetch_expense_summary(today, today))
+    except Exception as e:
+        print(f"Error: {e}")
