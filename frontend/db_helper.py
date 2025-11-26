@@ -9,24 +9,72 @@ logger = setup_logger('db_helper')
 
 @contextmanager
 def get_db_cursor(commit=False):
-    # Try to get credentials from Streamlit secrets first, then environment variables
+    """
+    Create a database cursor with credentials from Streamlit secrets or environment variables.
+    For Streamlit Cloud: Add secrets in app Settings → Secrets
+    For local development: Use .streamlit/secrets.toml
+    """
     try:
         db_host = st.secrets.get("DB_HOST", os.getenv("DB_HOST", "localhost"))
         db_user = st.secrets.get("DB_USER", os.getenv("DB_USER", "root"))
         db_password = st.secrets.get("DB_PASSWORD", os.getenv("DB_PASSWORD", ""))
         db_name = st.secrets.get("DB_NAME", os.getenv("DB_NAME", "expense_manager"))
-    except:
+        db_port = st.secrets.get("DB_PORT", os.getenv("DB_PORT", 3306))
+    except Exception as e:
         db_host = os.getenv("DB_HOST", "localhost")
         db_user = os.getenv("DB_USER", "root")
         db_password = os.getenv("DB_PASSWORD", "")
         db_name = os.getenv("DB_NAME", "expense_manager")
+        db_port = os.getenv("DB_PORT", 3306)
     
-    connection = mysql.connector.connect(
-        host=db_host,
-        user=db_user,
-        password=db_password,
-        database=db_name
-    )
+    try:
+        # Convert port to int if it's a string
+        try:
+            db_port = int(db_port)
+        except (ValueError, TypeError):
+            db_port = 3306
+            
+        connection = mysql.connector.connect(
+            host=db_host,
+            user=db_user,
+            password=db_password,
+            database=db_name,
+            port=db_port,
+            autocommit=False,
+            connection_timeout=10
+        )
+    except mysql.connector.Error as e:
+        error_msg = f"""
+        ❌ DATABASE CONNECTION ERROR
+        
+        Your app tried to connect to: {db_host}
+        
+        🚀 For Streamlit Cloud deployment:
+        1. Go to your Streamlit app → Settings → Secrets
+        2. Add these secrets:
+           DB_HOST = "your-cloud-database-host"
+           DB_USER = "your-database-user"
+           DB_PASSWORD = "your-database-password"
+           DB_NAME = "expense_manager"
+           DB_PORT = "3306"
+        
+        ⭐ Recommended: Use PlanetScale (planetscale.com)
+           - Free MySQL-compatible database
+           - Easy setup (5 minutes)
+           - No credit card needed
+        
+        📖 See CLOUD_DATABASE_SETUP.md for detailed instructions
+        
+        💻 For local development:
+        - Update frontend/.streamlit/secrets.toml
+        - Make sure MySQL is running
+        - Use 'localhost' as DB_HOST
+        
+        Error details: {str(e)}
+        """
+        st.error(error_msg)
+        logger.error(error_msg)
+        raise Exception(error_msg)
 
     cursor = connection.cursor(dictionary=True)
     yield cursor
