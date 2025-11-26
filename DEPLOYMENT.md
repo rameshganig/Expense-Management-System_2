@@ -103,17 +103,15 @@ project-root/
 
 ### For Streamlit Cloud:
 - **DO NOT commit `secrets.toml`** - Add to `.gitignore` and use Cloud UI instead
-- The app uses **direct database queries** by default (not API calls)
+- The app uses **direct database queries** by default (no separate API required)
 - This means all database access happens directly from the Streamlit app
 
 ### For Local Development:
-```bash
-# Terminal 1: Start FastAPI backend
-cd frontend
-python -m uvicorn server:app --reload
+Run the Streamlit app locally (no FastAPI server required):
 
-# Terminal 2: Start Streamlit app
-streamlit run app.py
+```bash
+# From project root
+streamlit run frontend/app.py
 ```
 
 ### For Production with Separate API:

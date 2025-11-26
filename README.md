@@ -1,8 +1,8 @@
 # 💰 Expense Management System
 
-A full-stack expense tracking application built with Streamlit and FastAPI. Track daily expenses by category and analyze spending patterns with interactive analytics.
+A Streamlit-based expense tracking application that connects directly to a MySQL database. Track daily expenses by category and analyze spending patterns with interactive analytics.
 
-**[📱 Try the Live Demo](https://streamlit.io/cloud)** | **[📖 Deployment Guide](./DEPLOYMENT.md)**
+**[📖 Deployment Guide](./DEPLOYMENT.md)**
 
 ## Features
 
@@ -72,15 +72,7 @@ project-root/
    streamlit run frontend/app.py
    ```
 
-   Option B - With FastAPI backend:
-   ```bash
-   # Terminal 1: Start API server
-   cd frontend
-   python -m uvicorn server:app --reload
-
-   # Terminal 2: Start Streamlit app
-   streamlit run frontend/app.py
-   ```
+   Note: This project is configured to run the Streamlit app with direct database access by default. No separate FastAPI server is required for local usage.
 
 ## Cloud Deployment
 
