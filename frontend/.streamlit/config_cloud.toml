@@ -1,0 +1,23 @@
+# .streamlit/config.toml
+
+[theme]
+primaryColor = "#FF6B6B"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F8F9FA"
+textColor = "#262730"
+font = "sans serif"
+
+[server]
+headless = true
+port = 8501
+runOnSave = true
+maxUploadSize = 200
+
+[client]
+showErrorDetails = true
+
+[logger]
+level = "info"
+
+[browser]
+gatherUsageStats = false
